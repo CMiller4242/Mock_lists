@@ -20,11 +20,12 @@ st.set_page_config(
 # 2) Custom CSS for header & tabs
 st.markdown("""
 <style>
-   /* Center the page title container */
-    .css-18e3th9 { 
-      display: flex !important;
-      justify-content: center !important;
-    }
+/* Center the main title */
+h1[data-testid="stTitle"] {
+    text-align: center;
+    margin-bottom: 0.5rem;
+}
+
 /* Distribute tabs evenly and constrain max‑width */
 div[data-baseweb="tab-list"][role="tablist"] {
     display: flex !important;
