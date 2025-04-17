@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime
 from pymongo import MongoClient
-import openai
+from openai import OpenAI
 import json
 
 
@@ -181,7 +181,7 @@ def generate_single_request(prompt: str) -> dict:
         "today’s date if not provided, and empty strings for other fields. Return ONLY valid JSON."
     )
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": system_instructions},
@@ -211,7 +211,7 @@ if "ai_generated_form" not in st.session_state:
     st.session_state["ai_generated_form"] = None  # For AI-generated form data
 
 # Set the OpenAI API key from Streamlit secrets
-openai.api_key = st.secrets["openai"]["api_key"]
+client = OpenAI(api_key=st.secrets["openai"]["api_key"])
 
 st.title("Requests Dashboard")
 
