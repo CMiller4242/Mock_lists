@@ -190,7 +190,7 @@ def generate_single_request(prompt: str) -> dict:
             max_tokens=800,
             temperature=0.3,
         )
-        ai_output = response.choices[0].message["content"].strip()
+        ai_output = response.choices[0].message.content.strip()
         parsed = json.loads(ai_output)
         if isinstance(parsed, list):
             if len(parsed) > 0:
