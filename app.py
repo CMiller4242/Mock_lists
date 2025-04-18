@@ -386,7 +386,7 @@ with tab_closed:
         save_data(st.session_state["requests_data"])
         st.success("Closed requests updated (and deleted) successfully!")
         force_page_refresh()
-#--------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------
 # Tab 5: AI Assistant
 # -------------------------------------------------------------------------------
 with tab_ai:
@@ -396,53 +396,50 @@ with tab_ai:
         "one request object. Once generated, the form will persist so you can adjust any fields and then save it."
     )
 
-    # Prompt input
+    # 1) Prompt input
     ai_prompt = st.text_area(
         "Enter the request details (e.g., an email snippet):",
         height=150
     )
 
-    # Generate the AI form
-if st.button("Generate Single Request from AI"):
-    if ai_prompt:
-        parsed_data = generate_single_request(ai_prompt)
-        if parsed_data is None:
-            st.error("No data returned or AI returned an empty output.")
+    # 2) Generate button
+    if st.button("Generate Single Request from AI"):
+        if ai_prompt:
+            parsed_data = generate_single_request(ai_prompt)
+            if parsed_data is None:
+                st.error("No data returned or AI returned an empty output.")
+            else:
+                # if Request Details came back blank, default to the raw prompt
+                if not parsed_data.get("Request Details", "").strip():
+                    parsed_data["Request Details"] = ai_prompt
+                st.session_state["ai_generated_form"] = parsed_data
         else:
-            # ─── NEW: ensure Request Details isn’t blank ───
-            rd = parsed_data.get("Request Details", "").strip()
-            if not rd:
-                parsed_data["Request Details"] = ai_prompt
-            # ────────────────────────────────────────────────
+            st.error("Please enter some details for the AI assistant to process.")
 
-            st.session_state["ai_generated_form"] = parsed_data
-    else:
-        st.error("Please enter some details for the AI assistant to process.")
-
-    # If we have AI data, render editable form
+    # 3) If we have AI data, render the editable form
     if st.session_state.get("ai_generated_form"):
         form = st.session_state["ai_generated_form"]
 
         st.subheader("AI‑Suggested Request Form")
-        st.info("Adjust any fields as needed, then click 'Save Request'.")
+        st.info("Adjust any fields as needed, then click 'Save Request (AI)' or 'Cancel Request (AI)'.")
 
         def val(key):
             return form.get(key, "")
 
-        title_ai = st.text_input("Title", value=val("Title"))
-        acct_seg_ai = st.text_input("ACCT & SEG#", value=val("ACCT & SEG#"))
+        # --- fields ---
+        title_ai             = st.text_input("Title", value=val("Title"))
+        acct_seg_ai          = st.text_input("ACCT & SEG#", value=val("ACCT & SEG#"))
 
-        # New single‑select "Request"
+        # single‑select “Request”
         default_req = val("Request")
         idx_req = REQUEST_CHOICES.index(default_req) if default_req in REQUEST_CHOICES else 0
         request_ai = st.selectbox("Request", REQUEST_CHOICES, index=idx_req)
 
-        # New multi‑select "Type"
-        raw_types = val("Type") or ""  
-        default_type = val("Type")
-        candidates = [t.strip() for t in raw_types.split(",")]
+        # multi‑select “Type”
+        raw_types     = val("Type") or ""
+        candidates    = [t.strip() for t in raw_types.split(",")]
         type_defaults = [t for t in candidates if t in TYPE_CHOICES]
-        type_ai = st.multiselect("Type", TYPE_CHOICES, default=type_defaults)
+        type_ai       = st.multiselect("Type", TYPE_CHOICES, default=type_defaults)
 
         request_details_ai = st.text_area(
             "Request Details",
@@ -451,16 +448,16 @@ if st.button("Generate Single Request from AI"):
         )
 
         # Priority
-        chosen_priority = val("Priority") if val("Priority") in ["Low","Normal","High"] else "Normal"
-        priority_ai = st.radio(
+        chosen_priority = val("Priority") if val("Priority") in ["Low", "Normal", "High"] else "Normal"
+        priority_ai     = st.radio(
             "Priority",
-            ["Low","Normal","High"],
-            index=["Low","Normal","High"].index(chosen_priority)
+            ["Low", "Normal", "High"],
+            index=["Low", "Normal", "High"].index(chosen_priority)
         )
 
         # Status
         chosen_status = val("Status") if val("Status") in STATUS_CHOICES else "NEW REQUEST"
-        status_ai = st.selectbox(
+        status_ai     = st.selectbox(
             "Status",
             STATUS_CHOICES,
             index=STATUS_CHOICES.index(chosen_status)
@@ -488,24 +485,31 @@ if st.button("Generate Single Request from AI"):
             value=val("Assigned To")
         )
 
-        # Save button
-        if st.button("Save Request (AI)"):
-            new_record = {
-                "Title": title_ai,
-                "ACCT & SEG#": acct_seg_ai,
-                "Request": request_ai,
-                "Type": ", ".join(type_ai),
-                "Request Details": request_details_ai,
-                "Priority": priority_ai,
-                "Status": status_ai,
-                "Virtual Req#": virtual_req_ai,
-                "Sourcing/Wearable#": sourcing_wearable_ai,
-                "Quote#": quote_num_ai,
-                "Order#": order_num_ai,
-                "Sample#": sample_num_ai,
-                "Request Date": req_date_ai.strftime("%Y-%m-%d"),
-                "Assigned To": assigned_to_ai,
-            }
-            process_and_save_request(new_record)
-            st.success("AI‑generated request saved successfully!")
-            # force_page_refresh()  # uncomment to immediately refresh tabs
+        # 4) Save / Cancel buttons side by side
+        col1, col2 = st.columns([1,1])
+        with col1:
+            if st.button("Save Request (AI)"):
+                new_record = {
+                    "Title":               title_ai,
+                    "ACCT & SEG#":         acct_seg_ai,
+                    "Request":             request_ai,
+                    "Type":                ", ".join(type_ai),
+                    "Request Details":     request_details_ai,
+                    "Priority":            priority_ai,
+                    "Status":              status_ai,
+                    "Virtual Req#":        virtual_req_ai,
+                    "Sourcing/Wearable#":  sourcing_wearable_ai,
+                    "Quote#":              quote_num_ai,
+                    "Order#":              order_num_ai,
+                    "Sample#":             sample_num_ai,
+                    "Request Date":        req_date_ai.strftime("%Y-%m-%d"),
+                    "Assigned To":         assigned_to_ai,
+                }
+                process_and_save_request(new_record)
+                st.success("AI‑generated request saved successfully!")
+                force_page_refresh()
+
+        with col2:
+            if st.button("Cancel Request (AI)"):
+                st.session_state["ai_generated_form"] = None
+                st.info("AI‑generated form cleared. You can paste a new prompt above.")
