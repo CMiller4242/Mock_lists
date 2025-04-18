@@ -6,6 +6,7 @@ from datetime import datetime
 from pymongo import MongoClient
 from openai import OpenAI
 import json
+import re
 
 
 #--------------------------------------------------------------------------------
@@ -158,45 +159,60 @@ def process_and_save_request(request_data: dict):
 # -------------------------------------------------------------------------------
 def generate_single_request(prompt: str) -> dict:
     system_instructions = (
-        "You are a data‐extraction assistant. From the user’s email text, return exactly ONE JSON object "
-        "with these keys: \"Title\", \"ACCT & SEG#\", \"Request\", \"Type\", \"Request Details\", "
-        "\"Priority\", \"Status\", \"Virtual Req#\", \"Sourcing/Wearable#\", \"Quote#\", \"Order#\", "
-        "\"Sample#\", \"Request Date\" (YYYY-MM-DD), and \"Assigned To\".\n\n"
+        "You are an entity‑extraction assistant. From the user’s text, return exactly ONE JSON object "
+        "with these keys: "
+        "\"Title\", \"ACCT & SEG#\", \"Request\", \"Type\", \"Request Details\", "
+        "\"Priority\", \"Status\", \"Virtual Req#\", \"Sourcing/Wearable#\", "
+        "\"Quote#\", \"Order#\", \"Sample#\", \"Request Date\" (YYYY-MM-DD), \"Assigned To\".\n\n"
 
-        "**ACCT & SEG#**: look for an 8‑digit number (leading zero allowed), a space, then 2 digits (00–99), "
-        "e.g. “00581869 12”. Store in this field when found.\n\n"
+        "**Required fields**: \"Request\" and \"Type\". If you cannot infer Request or Type, default Request to \"New Request\" and pick Type based on keywords.\n\n"
 
-        "**Quote#**: look for an 8‑digit number starting with 003 or 004. Store here when found.\n\n"
+        "**ACCT & SEG#**: an 8‑digit number (leading zeros allowed), optionally a space and 2‑digit segment (00–99), e.g. “00581869 12” or “00581869”.\n\n"
 
-        "**Order#**: look for an 8‑digit number starting with 6 or 3 (but not 003). Store here when found.\n\n"
+        "**Quote#**: an 8‑digit number starting with 003, 004, 005, etc. (e.g. “00401509”, “00500000”).\n\n"
 
-        "**Type** (choose exactly one):\n"
-        "- If text says “quote” and you have an ACCT & SEG# but no explicit Quote# → “Quote”.\n"
-        "- If text says “place order” or similar and you have an ACCT & SEG# → “Place Order”.\n"
-        "- If Quote# is present but no ACCT & SEG# and text says “convert” → “Convert”.\n"
-        "- If text mentions “proof”, “set up proofs”, or “proofs” → “Proof”.\n"
-        "- If text mentions “issue”, “issue log”, or implies a problem → “Sample Issue Log”.\n\n"
+        "**Order#**: an 8‑digit number starting with 3 or 6 (and not matching the Quote# pattern).\n\n"
 
-        "Use sensible defaults for missing fields: Request = \"New Request\", Status = \"NEW REQUEST\", "
-        "today’s date if not provided, and empty strings for other fields. Return ONLY valid JSON."
+        "**Type** (multi‑select): choose from [\"Quote\",\"Place Order\",\"Proof\",\"Sample\",\"Issue Log\",\"Sourcing\",\"Wearables\",\"CC Payment\",\"Convert\",\"Update Quote\",\"Follow-Up\"] based on:\n"
+        "  - if text says “quote” and you have ACCT & SEG# but no Quote# → “Quote”\n"
+        "  - if text says “place order” or “order” alongside a customer number → “Place Order”\n"
+        "  - if only a Quote# appears and text says “convert” → “Convert”\n"
+        "  - if text mentions “proof”, “set up proofs” → “Proof”\n"
+        "  - if text mentions “issue”, “problem”, “error” → “Issue Log”\n"
+        "  - if multiple types apply (e.g. “proof and quote”), return all in a comma‑separated list.\n\n"
+
+        "**Request Date**: detect dates in YYYY‑MM‑DD, MM/DD/YYYY or MM/DD format (assume current year), and output as YYYY‑MM‑DD.\n\n"
+
+        "Use sensible defaults for missing fields: "
+        "`Request = \"New Request\"`, `Status = \"NEW REQUEST\"`, empty string for others. "
+        "Return ONLY valid JSON, no extra commentary."
     )
     try:
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": system_instructions},
-                {"role": "user", "content": prompt},
+                {"role": "system",  "content": system_instructions},
+                {"role": "user",    "content": prompt},
             ],
             max_tokens=800,
             temperature=0.3,
         )
-        ai_output = response.choices[0].message.content.strip()
-        parsed = json.loads(ai_output)
-        if isinstance(parsed, list):
-            if len(parsed) > 0:
-                parsed = parsed[0]
-            else:
-                return None
+        raw = response.choices[0].message.content.strip()
+        parsed = json.loads(raw)
+        if isinstance(parsed, list) and parsed:
+            parsed = parsed[0]
+
+        # --- Post‑process date normalization ---
+        # if Date looks like MM/DD or MM/DD/YYYY, convert to YYYY-MM-DD
+        date_str = parsed.get("Request Date", "")
+        m = re.match(r"^(?P<m>\d{1,2})/(?P<d>\d{1,2})(?:/(?P<y>\d{2,4}))?$", date_str)
+        if m:
+            y = m.group("y") or str(datetime.now().year)
+            y = y if len(y)==4 else ("20"+y)
+            mm = m.group("m").zfill(2)
+            dd = m.group("d").zfill(2)
+            parsed["Request Date"] = f"{y}-{mm}-{dd}"
+
         return parsed
     except Exception as e:
         st.error(f"Error generating single request: {e}")
@@ -384,15 +400,21 @@ with tab_ai:
     )
 
     # Generate the AI form
-    if st.button("Generate Single Request from AI"):
-        if ai_prompt:
-            parsed_data = generate_single_request(ai_prompt)
-            if parsed_data:
-                st.session_state["ai_generated_form"] = parsed_data
-            else:
-                st.error("No data returned or AI returned an empty output.")
+if st.button("Generate Single Request from AI"):
+    if ai_prompt:
+        parsed_data = generate_single_request(ai_prompt)
+        if parsed_data is None:
+            st.error("No data returned or AI returned an empty output.")
         else:
-            st.error("Please enter some details for the AI assistant to process.")
+            # ─── NEW: ensure Request Details isn’t blank ───
+            rd = parsed_data.get("Request Details", "").strip()
+            if not rd:
+                parsed_data["Request Details"] = ai_prompt
+            # ────────────────────────────────────────────────
+
+            st.session_state["ai_generated_form"] = parsed_data
+    else:
+        st.error("Please enter some details for the AI assistant to process.")
 
     # If we have AI data, render editable form
     if st.session_state.get("ai_generated_form"):
