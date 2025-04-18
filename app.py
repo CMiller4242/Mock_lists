@@ -183,6 +183,9 @@ def generate_single_request(prompt: str) -> dict:
 
         "**Request Date**: detect dates in YYYY‑MM‑DD, MM/DD/YYYY or MM/DD format (assume current year), and output as YYYY‑MM‑DD.\n\n"
 
+        "**Important for Request Details:** Provide a concise *summary* of the user's original message, in your own words. "
+        "Do **not** repeat any raw values that you have already extracted into other fields (e.g. account numbers, quote numbers, dates, names). "
+
         "Use sensible defaults for missing fields: "
         "`Request = \"New Request\"`, `Status = \"NEW REQUEST\"`, empty string for others. "
         "Return ONLY valid JSON, no extra commentary."
