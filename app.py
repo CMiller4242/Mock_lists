@@ -104,10 +104,7 @@ def process_and_save_request(request_data: dict):
     )
     save_data(st.session_state["requests_data"])
 
-def force_page_refresh():
-    """Force a Streamlit rerun via a changing query‑param hack."""
-    st.experimental_set_query_params(_=str(time.time()))
-    st.stop()
+
 
 # -------------------------------------------------------------------------------
 # 4) AI Helper Function
@@ -144,13 +141,13 @@ def generate_single_request(prompt: str) -> dict:
             parsed = parsed[0]
         # normalize date
         date_str = parsed.get("Request Date", "")
-        m = re.match(r"^(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?$", date_str)
+        m = re.match(r"...", date_str)
         if m:
             y = m.group(3) or str(datetime.now().year)
             if len(y) == 2: y = "20" + y
             mm = m.group(1).zfill(2)
             dd = m.group(2).zfill(2)
-            parsed["Request Date"] = f"{y}-{mm}-{dd}"
+            parsed["Request Date"] = f"{mm}-{dd}-{y}"
         return parsed
 
     except Exception as e:
@@ -188,22 +185,23 @@ with tab_analytics:
 with tab_form:
     st.subheader("Create a New Request")
     with st.form("request_form"):
-        title            = st.text_input("Title")
-        acct_seg         = st.text_input("ACCT & SEG#")
-        request_choice   = st.selectbox("Request", REQUEST_CHOICES)
-        type_choices     = st.multiselect("Type", TYPE_CHOICES)
-        request_details  = st.text_area("Request Details", height=100)
-        priority         = st.radio("Priority", ["Low", "Normal", "High"])
-        status           = st.selectbox("Status", STATUS_CHOICES)
-        virtual_req      = st.text_input("Virtual Req#")
-        sourcing_wear    = st.text_input("Sourcing/Wearable#")
-        quote_num        = st.text_input("Quote#")
-        order_num        = st.text_input("Order#")
-        sample_num       = st.text_input("Sample#")
-        request_date     = st.date_input("Request Date", datetime.now())
-        assigned_to      = st.text_input("Assigned To (Name or Email)")
+        title          = st.text_input("Title")
+        acct_seg       = st.text_input("ACCT & SEG#")
+        request_choice = st.selectbox("Request", REQUEST_CHOICES)
+        type_choices   = st.multiselect("Type", TYPE_CHOICES)
+        request_details= st.text_area("Request Details", height=100)
+        priority       = st.radio("Priority", ["Low", "Normal", "High"])
+        status         = st.selectbox("Status", STATUS_CHOICES)
+        virtual_req    = st.text_input("Virtual Req#")
+        sourcing_wear  = st.text_input("Sourcing/Wearable#")
+        quote_num      = st.text_input("Quote#")
+        order_num      = st.text_input("Order#")
+        sample_num     = st.text_input("Sample#")
+        request_date   = st.date_input("Request Date", datetime.now())
+        assigned_to    = st.text_input("Assigned To (Name or Email)")
 
-        def _save_manual():
+        submitted = st.form_submit_button("Submit")
+        if submitted:
             process_and_save_request({
                 "Title":               title,
                 "ACCT & SEG#":         acct_seg,
@@ -220,15 +218,15 @@ with tab_form:
                 "Request Date":        request_date.strftime("%Y-%m-%d"),
                 "Assigned To":         assigned_to,
             })
-            force_page_refresh()
+            st.success("New request added and saved successfully!")
 
-        st.form_submit_button("Submit", on_click=_save_manual)
 
 # -------------------------------------------------------------------------------
-# Tab 3: Open Requests
+# Tab 3: Open Requests
 # -------------------------------------------------------------------------------
 with tab_open:
     st.subheader("Open Requests")
+
     mask_open = st.session_state["requests_data"]["Status"] != "CLOSED"
     open_df   = st.session_state["requests_data"].loc[mask_open, COLUMNS]
 
@@ -240,26 +238,28 @@ with tab_open:
         key="editor_open",
     )
 
-    def _save_open():
-        closed_df = st.session_state["requests_data"].loc[
-            st.session_state["requests_data"]["Status"] == "CLOSED", COLUMNS
-        ]
-        st.session_state["requests_data"] = pd.concat([edited_open, closed_df], ignore_index=True)
-        save_data(st.session_state["requests_data"])
-        force_page_refresh()
+    if st.button("Save Changes", key="save_open"):
+        try:
+            # everything in edited_open + untouched closed
+            closed_df = st.session_state["requests_data"].loc[
+                st.session_state["requests_data"]["Status"] == "CLOSED", COLUMNS
+            ]
+            st.session_state["requests_data"] = pd.concat(
+                [edited_open, closed_df], ignore_index=True
+            )
+            save_data(st.session_state["requests_data"])
+            st.success("Open requests updated successfully!")
+        except Exception:
+            st.error("Something went wrong while saving Open Requests.")
 
-    st.button(
-        "Save Changes",
-        key="save_open_button",
-        on_click=_save_open,
-    )
 
 
 # -------------------------------------------------------------------------------
-# Tab 4: Closed Requests
+# Tab 4: Closed Requests
 # -------------------------------------------------------------------------------
 with tab_closed:
     st.subheader("Closed Requests")
+
     mask_closed = st.session_state["requests_data"]["Status"] == "CLOSED"
     closed_df   = st.session_state["requests_data"].loc[mask_closed, COLUMNS]
 
@@ -271,113 +271,145 @@ with tab_closed:
         key="editor_closed",
     )
 
-    def _save_closed():
-        open_df = st.session_state["requests_data"].loc[
-            st.session_state["requests_data"]["Status"] != "CLOSED", COLUMNS
-        ]
-        st.session_state["requests_data"] = pd.concat([open_df, edited_closed], ignore_index=True)
-        save_data(st.session_state["requests_data"])
-        force_page_refresh()
-
-    st.button(
-        "Save Changes",
-        key="save_closed_button",
-        on_click=_save_closed,
-    )
+    if st.button("Save Changes", key="save_closed"):
+        try:
+            open_df = st.session_state["requests_data"].loc[
+                st.session_state["requests_data"]["Status"] != "CLOSED", COLUMNS
+            ]
+            st.session_state["requests_data"] = pd.concat(
+                [open_df, edited_closed], ignore_index=True
+            )
+            save_data(st.session_state["requests_data"])
+            st.success("Closed requests updated successfully!")
+        except Exception:
+            st.error("Something went wrong while saving Closed Requests.")
 
 # -------------------------------------------------------------------------------
-# Tab 5: AI Assistant
+# Tab 5: AI Assistant
 # -------------------------------------------------------------------------------
 with tab_ai:
     st.subheader("AI Assistant to Autofill Request Form")
     st.write(
-        "Paste your email text or request details below. The AI will convert it into exactly "
-        "one request object. Once generated, the form will persist so you can adjust any fields and then save it."
+        "Paste your email text or request details below. Once generated, adjust any fields and then save."
     )
 
+    # 1) prompt + generate
     ai_prompt = st.text_area(
         "Enter the request details (e.g., an email snippet):",
         height=150,
         key="ai_prompt",
     )
-
     if st.button("Generate Single Request from AI", key="gen_ai"):
-        if ai_prompt:
+        if not ai_prompt:
+            st.error("Please enter some text to generate.")
+        else:
             parsed = generate_single_request(ai_prompt)
-            if not parsed:
-                st.error("No data returned or AI returned an empty output.")
-            else:
+            if parsed:
                 if not parsed.get("Request Details","").strip():
                     parsed["Request Details"] = ai_prompt
                 st.session_state["ai_generated_form"] = parsed
-        else:
-            st.error("Please enter some details for the AI assistant to process.")
+            else:
+                st.error("AI returned no data.")
 
-    if st.session_state.get("ai_generated_form"):
-        form = st.session_state["ai_generated_form"]
-        st.subheader("AI‑Suggested Request Form")
-        st.info("Adjust any fields as needed, then click ‘Save Request (AI)’ or ‘Cancel Request (AI)’.")
+# -------------------------------------------------------------------------------
+# 2) Render the AI-suggested form (only if it’s actually a dict)
+# -------------------------------------------------------------------------------
+form = st.session_state.get("ai_generated_form")
+if form:
+    st.subheader("AI-Suggested Request Form")
+    st.info("Adjust any fields as needed, then click 'Save' or 'Cancel'.")
 
-        def val(k): return form.get(k,"")
-        title_ai   = st.text_input("Title", value=val("Title"))
-        acct_ai    = st.text_input("ACCT & SEG#", value=val("ACCT & SEG#"))
+    def val(key, default=""):
+        return form.get(key, default)
 
-        # Request
-        idx_req = REQUEST_CHOICES.index(val("Request")) if val("Request") in REQUEST_CHOICES else 0
-        request_ai = st.selectbox("Request", REQUEST_CHOICES, index=idx_req)
+    # ── Fields ───────────────────────────────────────────────────────────────────
 
-        # Type
-        raw_types     = val("Type") or ""
-        candidates    = [t.strip() for t in raw_types.split(",")]
-        type_defaults = [t for t in candidates if t in TYPE_CHOICES]
-        type_ai       = st.multiselect("Type", TYPE_CHOICES, default=type_defaults)
+    # Title & Account (only declared ONCE each)
+    title_ai    = st.text_input("Title", value=val("Title"), key="ai_title")
+    acct_seg_ai = st.text_input("ACCT & SEG#", value=val("ACCT & SEG#"), key="ai_acct")
 
-        rqdt_ai = st.text_area("Request Details", value=val("Request Details"), height=100)
+    # Request
+    default_req = val("Request")
+    req_index   = REQUEST_CHOICES.index(default_req) if default_req in REQUEST_CHOICES else 0
+    request_ai  = st.selectbox("Request", REQUEST_CHOICES, index=req_index, key="ai_request")
 
-        # Priority
-        prios   = ["Low","Normal","High"]
-        idx_pr  = prios.index(val("Priority")) if val("Priority") in prios else 1
-        priority_ai = st.radio("Priority", prios, index=idx_pr)
+    # Type
+    raw_types     = val("Type")
+    candidates    = [t.strip() for t in (raw_types or "").split(",")]
+    type_defaults = [t for t in candidates if t in TYPE_CHOICES]
+    type_ai       = st.multiselect("Type", TYPE_CHOICES, default=type_defaults, key="ai_type")
 
-        # Status
-        idx_st  = STATUS_CHOICES.index(val("Status")) if val("Status") in STATUS_CHOICES else 0
-        status_ai   = st.selectbox("Status", STATUS_CHOICES, index=idx_st)
+    # Request Details
+    request_details_ai = st.text_area(
+        "Request Details",
+        value=val("Request Details"),
+        height=100,
+        key="ai_details"
+    )
 
-        vr_ai    = st.text_input("Virtual Req#",       value=val("Virtual Req#"))
-        sw_ai    = st.text_input("Sourcing/Wearable#", value=val("Sourcing/Wearable#"))
-        q_ai     = st.text_input("Quote#",             value=val("Quote#"))
-        o_ai     = st.text_input("Order#",             value=val("Order#"))
-        s_ai     = st.text_input("Sample#",            value=val("Sample#"))
+    # Priority
+    prios         = ["Low", "Normal", "High"]
+    default_prio  = val("Priority") if val("Priority") in prios else "Normal"
+    prio_index    = prios.index(default_prio)
+    priority_ai   = st.radio("Priority", prios, index=prio_index, key="ai_prio")
 
-        def _parse_date(d):
-            try:    return datetime.strptime(d, "%Y-%m-%d").date()
-            except: return datetime.now().date()
-        rd_ai   = st.date_input("Request Date", value=_parse_date(val("Request Date")))
-        at_ai   = st.text_input("Assigned To (Name or Email)", value=val("Assigned To"))
+    # Status
+    default_stat  = val("Status") if val("Status") in STATUS_CHOICES else "NEW REQUEST"
+    stat_index    = STATUS_CHOICES.index(default_stat)
+    status_ai     = st.selectbox("Status", STATUS_CHOICES, index=stat_index, key="ai_status")
 
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Save Request (AI)", key="save_ai"):
-                process_and_save_request({
-                    "Title":               title_ai,
-                    "ACCT & SEG#":         acct_ai,
-                    "Request":             request_ai,
-                    "Type":                ", ".join(type_ai),
-                    "Request Details":     rqdt_ai,
-                    "Priority":            priority_ai,
-                    "Status":              status_ai,
-                    "Virtual Req#":        vr_ai,
-                    "Sourcing/Wearable#":  sw_ai,
-                    "Quote#":              q_ai,
-                    "Order#":              o_ai,
-                    "Sample#":             s_ai,
-                    "Request Date":        rd_ai.strftime("%Y-%m-%d"),
-                    "Assigned To":         at_ai,
-                })
-                st.session_state["ai_generated_form"] = None
-                force_page_refresh()
+    # The rest of your fields (only once each, with unique keys)
+    virtual_req_ai       = st.text_input("Virtual Req#",        value=val("Virtual Req#"),       key="ai_vreq")
+    sourcing_wearable_ai = st.text_input("Sourcing/Wearable#",  value=val("Sourcing/Wearable#"), key="ai_sourcing")
+    quote_num_ai         = st.text_input("Quote#",              value=val("Quote#"),             key="ai_quote")
+    order_num_ai         = st.text_input("Order#",              value=val("Order#"),             key="ai_order")
+    sample_num_ai        = st.text_input("Sample#",             value=val("Sample#"),            key="ai_sample")
 
-        with c2:
-            if st.button("Cancel Request (AI)", key="cancel_ai"):
-                st.session_state["ai_generated_form"] = None
-                st.info("AI‑generated form cleared. You can paste a new prompt above.")
+    # Date parsing helper
+    def _parse_date(d):
+        try:
+            return datetime.strptime(d, "%Y-%m-%d").date()
+        except:
+            return datetime.now().date()
+
+    req_date_ai = st.date_input(
+        "Request Date",
+        value=_parse_date(val("Request Date")),
+        key="ai_date"
+    )
+
+    assigned_to_ai = st.text_input(
+        "Assigned To (Name or Email)",
+        value=val("Assigned To"),
+        key="ai_assigned"
+    )
+
+    # ── Save / Cancel ────────────────────────────────────────────────────────────
+    def _save_ai():
+        new_record = {
+            "Title":               title_ai,
+            "ACCT & SEG#":         acct_seg_ai,
+            "Request":             request_ai,
+            "Type":                ", ".join(type_ai),
+            "Request Details":     request_details_ai,
+            "Priority":            priority_ai,
+            "Status":              status_ai,
+            "Virtual Req#":        virtual_req_ai,
+            "Sourcing/Wearable#":  sourcing_wearable_ai,
+            "Quote#":              quote_num_ai,
+            "Order#":              order_num_ai,
+            "Sample#":             sample_num_ai,
+            "Request Date":        req_date_ai.strftime("%Y-%m-%d"),
+            "Assigned To":         assigned_to_ai,
+        }
+        process_and_save_request(new_record)
+        st.session_state["ai_generated_form"] = None
+
+    def _cancel_ai():
+        st.session_state["ai_generated_form"] = None
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.button("Save Request (AI)", key="ai_save", on_click=_save_ai)
+    with col2:
+        st.button("Cancel Request (AI)", key="ai_cancel", on_click=_cancel_ai)
