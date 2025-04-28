@@ -6,6 +6,13 @@ from pymongo import MongoClient
 from openai import OpenAI
 import json
 import re
+import uuid
+from datetime import datetime, timedelta
+import smtplib
+from email.message import EmailMessage
+import msal, requests, uuid
+
+
 
 #--------------------------------------------------------------------------------
 # CSS & Page Config
@@ -55,7 +62,111 @@ div[data-baseweb="tab-list"][role="tablist"] button[data-baseweb="tab"] div[data
 # -------------------------------------------------------------------------------
 MONGODB_URI = "mongodb+srv://cmillerjr:GyfC0t2s2Y6M64jd@mocklists.x5nczjz.mongodb.net/?retryWrites=true&w=majority&appName=MockLists"
 mongo_client = MongoClient(MONGODB_URI)
-collection = mongo_client["MockLists"]["requests"]
+db           = mongo_client["MockLists"]
+collection   = db["requests"]
+
+tokens_coll = mongo_client["MockLists"]["login_tokens"]
+
+# #--------------------------------------------------------------------------------
+# # Login & Auth
+# #--------------------------------------------------------------------------------
+# def send_magic_link(email: str):
+#     # 1) start device-code flow
+#     app = msal.PublicClientApplication(
+#         client_id  = st.secrets["azure"]["client_id"],
+#         authority  = f"https://login.microsoftonline.com/{st.secrets['azure']['tenant_id']}"
+#     )
+#     flow = app.initiate_device_flow(scopes=st.secrets["azure"]["scopes"])
+#     if "user_code" not in flow:
+#         st.error("❌ Device‐flow failed to start. Check your Azure config.")
+#         return
+
+#     # show instructions
+#     st.info(flow["message"])
+
+#     # 2) generate & store our “magic” token
+#     token    = str(uuid.uuid4())
+#     expire_at = datetime.utcnow() + timedelta(minutes=15)
+#     tokens_coll.insert_one({
+#         "token":     token,
+#         "email":     email,
+#         "expire_at": expire_at,
+#     })
+
+#     # 3) wait for user to finish browser sign-in
+#     result = app.acquire_token_by_device_flow(flow)
+#     if "access_token" not in result:
+#         st.error("❌ Login failed: " + result.get("error_description",""))
+#         return
+
+#     access_token = result["access_token"]
+
+#     # ─── Step 4 ▶ build the magic-link back into your app ───
+#     link = f"{st.secrets['magic_link']['app_url']}?token={token}"
+
+#     # 5) send via Microsoft Graph
+#     mail_payload = {
+#         "message": {
+#             "subject":     "🔑 Your magic link for Requests Dashboard",
+#             "body": {
+#                 "contentType": "Text",
+#                 "content":     f"Click here to sign in (expires in 15 min):\n\n{link}"
+#             },
+#             "toRecipients": [{"emailAddress": {"address": email}}]
+#         }
+#     }
+#     r = requests.post(
+#         "https://graph.microsoft.com/v1.0/me/sendMail",
+#         headers={
+#             "Authorization": f"Bearer {access_token}",
+#             "Content-Type":  "application/json",
+#         },
+#         json=mail_payload,
+#     )
+#     if r.status_code == 202:
+#         st.success(f"✅ Magic link sent to {email}!")
+#     else:
+#         st.error(f"❌ sendMail failed: {r.status_code} {r.text}")
+
+
+# # ───────────────────────────
+# # Handle incoming magic-link token
+# # ───────────────────────────
+# params = st.query_params
+# if "token" in params:
+#     tok = params["token"][0]
+#     rec = tokens_coll.find_one({"token": tok})
+#     if rec and rec["expire_at"] > datetime.utcnow():
+#         # log them in
+#         st.session_state["user_email"] = rec["email"]
+#         tokens_coll.delete_one({"_id": rec["_id"]})
+
+#         # clear token from URL so we don’t loop
+#         st.set_query_params()        # <-- replaces experimental_set_query_params
+#         st.experimental_rerun()      # re-run now that session_state has user_email
+#     else:
+#         st.error("Magic link is invalid or expired.")
+
+
+# # ───────────────────────────
+# # guard: if not signed in, show login form and bail
+# # ───────────────────────────
+# if "user_email" not in st.session_state:
+#     st.markdown("## Please sign in with your work email")
+#     email_in = st.text_input("Work email", placeholder="you@positivepromotions.com")
+#     if st.button("Send magic link"):
+#         if email_in.endswith("@positivepromotions.com"):
+#             send_magic_link(email_in)
+#         else:
+#             st.error("Only @positivepromotions.com addresses are allowed.")
+#     st.stop()
+
+
+# # — Now you’re “logged in” — proceed to your tabs —
+# # — Later you can gate admin-only controls via —
+# is_admin = st.session_state["user_email"] in st.secrets["admins"]["emails"]
+
+
 
 # -------------------------------------------------------------------------------
 # 2) Config & Data Schemas
@@ -110,9 +221,13 @@ def process_and_save_request(request_data: dict):
 # 4) AI Helper Function
 # -------------------------------------------------------------------------------
 def generate_single_request(prompt: str) -> dict:
+    """
+    Extract exactly ONE request from the given prompt
+    and return it as a dict with all the required fields.
+    """
     system_instructions = (
-        "You are an entity‑extraction assistant. From the user’s text, return exactly ONE JSON object "
-        "with these keys: "
+        "You are an entity-extraction assistant. From the user’s free-form text, "
+        "return exactly ONE JSON object with these keys: "
         "\"Title\", \"ACCT & SEG#\", \"Request\", \"Type\", \"Request Details\", "
         "\"Priority\", \"Status\", \"Virtual Req#\", \"Sourcing/Wearable#\", "
         "\"Quote#\", \"Order#\", \"Sample#\", \"Request Date\" (YYYY-MM-DD), \"Assigned To\".\n\n"
@@ -120,12 +235,28 @@ def generate_single_request(prompt: str) -> dict:
         "**ACCT & SEG#**: 8 digits plus optional space+2 digits.\n\n"
         "**Quote#**: 8 digits starting with 003,004,005…\n\n"
         "**Order#**: 8 digits starting with 3 or 6 (not quote pattern).\n\n"
-        "**Type**: multi‑select from the list based on keywords (quote, place order, proof, issue, etc.).\n\n"
-        "**Request Date**: parse YYYY-MM-DD, MM/DD/YYYY, or MM/DD → output YYYY-MM-DD.\n\n"
-        "**Request Details**: provide a concise summary of the original text; do not repeat extracted values.\n\n"
-        "Return only valid JSON, no commentary."
+        "**Type**: multi-select based on keywords (quote, place order, proof, issue, etc.).\n\n"
+        """**Classification rules**:
+- If text mentions an existing order#/quote# plus any “problem” or “delay”
+  (e.g. broken, shortage, event date), set Request="Issue Log" & Type="Issue Log".
+- If text modifies or adds to an existing order (e.g. “Add more bags”,
+  “please review order”), set Request="Update".
+- Otherwise default Request="New Request".
+
+**Date handling**:
+- Recognize dates like “4/30” → assume current year, format as `YYYY-04-30`.
+- If it’s an event or deadline, capture that in your summary, not raw text.
+
+**Summary**:
+- One crisp sentence describing the core action or issue.
+- Do NOT repeat any raw values (order#/quote#, SKUs, dates).
+
+Use sensible defaults for missing fields (`Request="New Request"`,
+`Status="NEW REQUEST"`, empty string others). Return ONLY valid JSON.
+"""
     )
     try:
+        # 1) ask GPT
         resp = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
@@ -135,25 +266,70 @@ def generate_single_request(prompt: str) -> dict:
             max_tokens=800,
             temperature=0.3,
         )
-        raw = resp.choices[0].message.content.strip()
+        raw    = resp.choices[0].message.content.strip()
         parsed = json.loads(raw)
         if isinstance(parsed, list) and parsed:
             parsed = parsed[0]
-        # normalize date
+
+        # 2) extract any raw order#s into Order#s array
+        orders = re.findall(r"\b[36]\d{7}\b", prompt)
+        if orders:
+            parsed["Order#s"] = orders
+
+        # 3) normalize Request Date
         date_str = parsed.get("Request Date", "")
-        m = re.match(r"...", date_str)
+        m = re.match(r"^(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?$", date_str)
         if m:
-            y = m.group(3) or str(datetime.now().year)
-            if len(y) == 2: y = "20" + y
+            y  = m.group(3) or str(datetime.now().year)
+            if len(y) == 2:
+                y = "20" + y
             mm = m.group(1).zfill(2)
             dd = m.group(2).zfill(2)
             parsed["Request Date"] = f"{mm}-{dd}-{y}"
+
+        # 4) auto-fill Title if blank
+        if not parsed.get("Title", "").strip():
+            fac = re.search(
+                r"([A-Z][\w\s]+(?:College|Hospital|School|Bank))",
+                prompt
+            )
+            if fac:
+                parsed["Title"] = fac.group(1).strip()
+            else:
+                summ = parsed.get("Request Details", "")
+                parsed["Title"] = " ".join(summ.split()[:5]) or "New Request"
+
         return parsed
 
     except Exception as e:
         st.error(f"Error generating request: {e}")
         return None
+    
+def generate_requests(prompt: str) -> list[dict]:
+    """
+    Given a block of text containing multiple order#s,
+    extract each 8-digit order (3xxxxxxx or 6xxxxxxx),
+    run the single-request parser on each, and return a list.
+    """
+    try:
+        orders = re.findall(r"\b[36]\d{7}\b", prompt)
+        results = []
 
+        for o in orders:
+            # build a focused prompt for each order
+            sub_prompt = f"Order# {o}\n\nContext:\n{prompt}"
+            parsed = generate_single_request(sub_prompt)
+
+            if parsed:
+                # ensure the Order# field is correct
+                parsed["Order#"] = o
+                results.append(parsed)
+
+        return results
+
+    except Exception as e:
+        st.error(f"Error generating multiple requests: {e}")
+        return []
 # -------------------------------------------------------------------------------
 # 5) App Init & Session State
 # -------------------------------------------------------------------------------
@@ -289,127 +465,230 @@ with tab_closed:
 # -------------------------------------------------------------------------------
 with tab_ai:
     st.subheader("AI Assistant to Autofill Request Form")
-    st.write(
-        "Paste your email text or request details below. Once generated, adjust any fields and then save."
+    st.write("Choose Single or Multi mode, paste your text, then click Generate.")
+
+    # 1) Mode selector
+    mode = st.radio(
+        "Generation mode:",
+        ["Single Request", "Multi Request"],
+        horizontal=True,
+        index=0
     )
 
-    # 1) prompt + generate
+    # 2) Prompt input
     ai_prompt = st.text_area(
         "Enter the request details (e.g., an email snippet):",
         height=150,
-        key="ai_prompt",
+        key="ai_prompt"
     )
-    if st.button("Generate Single Request from AI", key="gen_ai"):
-        if not ai_prompt:
-            st.error("Please enter some text to generate.")
-        else:
-            parsed = generate_single_request(ai_prompt)
-            if parsed:
-                if not parsed.get("Request Details","").strip():
-                    parsed["Request Details"] = ai_prompt
-                st.session_state["ai_generated_form"] = parsed
+
+    # 3) Generate button(s)
+    if mode == "Single Request":
+        if st.button("Generate Single Request from AI", key="gen_ai_single"):
+            if not ai_prompt:
+                st.error("Please enter some text.")
             else:
-                st.error("AI returned no data.")
+                parsed = generate_single_request(ai_prompt)
+                if not parsed:
+                    st.error("AI returned no data.")
+                else:
+                    if not parsed.get("Request Details", "").strip():
+                        parsed["Request Details"] = ai_prompt
+                    st.session_state["ai_generated_form"] = parsed
 
-# -------------------------------------------------------------------------------
-# 2) Render the AI-suggested form (only if it’s actually a dict)
-# -------------------------------------------------------------------------------
-form = st.session_state.get("ai_generated_form")
-if form:
-    st.subheader("AI-Suggested Request Form")
-    st.info("Adjust any fields as needed, then click 'Save' or 'Cancel'.")
+    else:  # Multi Request
+        if st.button("Generate Multi Request from AI", key="gen_ai_multi"):
+            if not ai_prompt:
+                st.error("Please enter some text.")
+            else:
+                batch = generate_requests(ai_prompt)
+                if not batch:
+                    st.error("No valid order numbers found in your text.")
+                else:
+                    st.session_state["ai_generated_forms"] = batch
 
-    def val(key, default=""):
-        return form.get(key, default)
+    # ── 4) Render Single Form ───────────────────────────────────────────────────
+    form = st.session_state.get("ai_generated_form")
+    if form:
+        def val(k, default=""):
+            return form.get(k, default)
 
-    # ── Fields ───────────────────────────────────────────────────────────────────
+        st.subheader("AI-Suggested Request Form")
+        st.info("Adjust fields as needed, then click Save or Cancel.")
 
-    # Title & Account (only declared ONCE each)
-    title_ai    = st.text_input("Title", value=val("Title"), key="ai_title")
-    acct_seg_ai = st.text_input("ACCT & SEG#", value=val("ACCT & SEG#"), key="ai_acct")
+        # Title & Account
+        title_ai    = st.text_input("Title",      value=val("Title"),      key="ai_title")
+        acct_seg_ai = st.text_input("ACCT & SEG#", value=val("ACCT & SEG#"), key="ai_acct")
 
-    # Request
-    default_req = val("Request")
-    req_index   = REQUEST_CHOICES.index(default_req) if default_req in REQUEST_CHOICES else 0
-    request_ai  = st.selectbox("Request", REQUEST_CHOICES, index=req_index, key="ai_request")
+        # Request
+        req_default = val("Request")
+        req_index   = REQUEST_CHOICES.index(req_default) if req_default in REQUEST_CHOICES else 0
+        request_ai  = st.selectbox("Request", REQUEST_CHOICES, index=req_index, key="ai_request")
 
-    # Type
-    raw_types     = val("Type")
-    candidates    = [t.strip() for t in (raw_types or "").split(",")]
-    type_defaults = [t for t in candidates if t in TYPE_CHOICES]
-    type_ai       = st.multiselect("Type", TYPE_CHOICES, default=type_defaults, key="ai_type")
+        # Type
+        raw_types     = val("Type")
+        candidates    = [t.strip() for t in (raw_types or "").split(",")]
+        type_defaults = [t for t in candidates if t in TYPE_CHOICES]
+        type_ai       = st.multiselect("Type", TYPE_CHOICES, default=type_defaults, key="ai_type")
 
-    # Request Details
-    request_details_ai = st.text_area(
-        "Request Details",
-        value=val("Request Details"),
-        height=100,
-        key="ai_details"
-    )
+        # Details
+        details_ai = st.text_area(
+            "Request Details",
+            value=val("Request Details"),
+            height=100,
+            key="ai_details"
+        )
 
-    # Priority
-    prios         = ["Low", "Normal", "High"]
-    default_prio  = val("Priority") if val("Priority") in prios else "Normal"
-    prio_index    = prios.index(default_prio)
-    priority_ai   = st.radio("Priority", prios, index=prio_index, key="ai_prio")
+        # Priority / Status
+        prios       = ["Low", "Normal", "High"]
+        def_prio    = val("Priority") if val("Priority") in prios else "Normal"
+        priority_ai = st.radio("Priority", prios, index=prios.index(def_prio), key="ai_prio")
 
-    # Status
-    default_stat  = val("Status") if val("Status") in STATUS_CHOICES else "NEW REQUEST"
-    stat_index    = STATUS_CHOICES.index(default_stat)
-    status_ai     = st.selectbox("Status", STATUS_CHOICES, index=stat_index, key="ai_status")
+        def_stat    = val("Status") if val("Status") in STATUS_CHOICES else "NEW REQUEST"
+        status_ai   = st.selectbox("Status", STATUS_CHOICES, index=STATUS_CHOICES.index(def_stat), key="ai_status")
 
-    # The rest of your fields (only once each, with unique keys)
-    virtual_req_ai       = st.text_input("Virtual Req#",        value=val("Virtual Req#"),       key="ai_vreq")
-    sourcing_wearable_ai = st.text_input("Sourcing/Wearable#",  value=val("Sourcing/Wearable#"), key="ai_sourcing")
-    quote_num_ai         = st.text_input("Quote#",              value=val("Quote#"),             key="ai_quote")
-    order_num_ai         = st.text_input("Order#",              value=val("Order#"),             key="ai_order")
-    sample_num_ai        = st.text_input("Sample#",             value=val("Sample#"),            key="ai_sample")
+        # The rest
+        virtual_req_ai       = st.text_input("Virtual Req#",        value=val("Virtual Req#"),       key="ai_vreq")
+        sourcing_wearable_ai = st.text_input("Sourcing/Wearable#",  value=val("Sourcing/Wearable#"), key="ai_sourcing")
+        quote_num_ai         = st.text_input("Quote#",              value=val("Quote#"),             key="ai_quote")
+        order_num_ai         = st.text_input("Order#",              value=val("Order#"),             key="ai_order")
+        sample_num_ai        = st.text_input("Sample#",             value=val("Sample#"),            key="ai_sample")
 
-    # Date parsing helper
-    def _parse_date(d):
-        try:
-            return datetime.strptime(d, "%Y-%m-%d").date()
-        except:
-            return datetime.now().date()
+        # Date helper
+        def _parse_date(d):
+            try:
+                return datetime.strptime(d, "%Y-%m-%d").date()
+            except:
+                return datetime.now().date()
 
-    req_date_ai = st.date_input(
-        "Request Date",
-        value=_parse_date(val("Request Date")),
-        key="ai_date"
-    )
+        req_date_ai = st.date_input(
+            "Request Date",
+            value=_parse_date(val("Request Date")),
+            key="ai_date"
+        )
 
-    assigned_to_ai = st.text_input(
-        "Assigned To (Name or Email)",
-        value=val("Assigned To"),
-        key="ai_assigned"
-    )
+        assigned_to_ai = st.text_input(
+            "Assigned To (Name or Email)",
+            value=val("Assigned To"),
+            key="ai_assigned"
+        )
 
-    # ── Save / Cancel ────────────────────────────────────────────────────────────
-    def _save_ai():
-        new_record = {
-            "Title":               title_ai,
-            "ACCT & SEG#":         acct_seg_ai,
-            "Request":             request_ai,
-            "Type":                ", ".join(type_ai),
-            "Request Details":     request_details_ai,
-            "Priority":            priority_ai,
-            "Status":              status_ai,
-            "Virtual Req#":        virtual_req_ai,
-            "Sourcing/Wearable#":  sourcing_wearable_ai,
-            "Quote#":              quote_num_ai,
-            "Order#":              order_num_ai,
-            "Sample#":             sample_num_ai,
-            "Request Date":        req_date_ai.strftime("%Y-%m-%d"),
-            "Assigned To":         assigned_to_ai,
-        }
-        process_and_save_request(new_record)
-        st.session_state["ai_generated_form"] = None
+        # Save / Cancel
+        def _save_ai():
+            new_record = {
+                "Title":               title_ai,
+                "ACCT & SEG#":         acct_seg_ai,
+                "Request":             request_ai,
+                "Type":                ", ".join(type_ai),
+                "Request Details":     details_ai,
+                "Priority":            priority_ai,
+                "Status":              status_ai,
+                "Virtual Req#":        virtual_req_ai,
+                "Sourcing/Wearable#":  sourcing_wearable_ai,
+                "Quote#":              quote_num_ai,
+                "Order#":              order_num_ai,
+                "Sample#":             sample_num_ai,
+                "Request Date":        req_date_ai.strftime("%Y-%m-%d"),
+                "Assigned To":         assigned_to_ai,
+            }
+            process_and_save_request(new_record)
+            st.session_state["ai_generated_form"] = None
 
-    def _cancel_ai():
-        st.session_state["ai_generated_form"] = None
+        def _cancel_ai():
+            st.session_state["ai_generated_form"] = None
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.button("Save Request (AI)", key="ai_save", on_click=_save_ai)
-    with col2:
-        st.button("Cancel Request (AI)", key="ai_cancel", on_click=_cancel_ai)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.button("Save Request (AI)",   key="ai_save",   on_click=_save_ai)
+        with c2:
+            st.button("Cancel Request (AI)", key="ai_cancel", on_click=_cancel_ai)
+
+# ── 5) Render Multiple Forms ─────────────────────────────────────────────────
+batch = st.session_state.get("ai_generated_forms", [])
+if batch:
+    for idx, form in enumerate(batch):
+        def val(k, default=""):
+            return form.get(k, default)
+
+        with st.expander(f"AI Form #{idx+1} — Order {form['Order#']}"):
+            # Title & Account
+            title_i    = st.text_input("Title",      value=val("Title"),      key=f"ai_title_{idx}")
+            acct_i     = st.text_input("ACCT & SEG#", value=val("ACCT & SEG#"), key=f"ai_acct_{idx}")
+
+            # Request
+            req_def    = val("Request")
+            req_i      = st.selectbox(
+                             "Request",
+                             REQUEST_CHOICES,
+                             index=REQUEST_CHOICES.index(req_def) if req_def in REQUEST_CHOICES else 0,
+                             key=f"ai_req_{idx}"
+                         )
+
+            # Type
+            type_i     = st.multiselect(
+                             "Type",
+                             TYPE_CHOICES,
+                             default=[t.strip() for t in val("Type", "").split(",")],
+                             key=f"ai_type_{idx}"
+                         )
+
+            # Details
+            det_i      = st.text_area(
+                             "Request Details",
+                             value=val("Request Details"),
+                             height=100,
+                             key=f"ai_details_{idx}"
+                         )
+
+            # Save this one
+            if st.button("Save This Request", key=f"ai_save_{idx}"):
+                new_rec = {
+                    "Title":           title_i,
+                    "ACCT & SEG#":     acct_i,
+                    "Request":         req_i,
+                    "Type":            ", ".join(type_i),
+                    "Request Details": det_i,
+                    "Order#":          form["Order#"],
+                    "Priority":        form.get("Priority","Low"),
+                    "Status":          form.get("Status","NEW REQUEST"),
+                    "Request Date":    form.get("Request Date", datetime.now().strftime("%Y-%m-%d")),
+                    "Assigned To":     form.get("Assigned To",""),
+                }
+                process_and_save_request(new_rec)
+                st.success(f"Saved order {form['Order#']}!")
+                st.session_state["ai_generated_forms"].pop(idx)
+                st.experimental_rerun()
+
+    # ── NEW: Save All Requests at Once ────────────────────────────────────────
+    if st.button("Save All Requests", key="ai_save_all"):
+        for idx, form in enumerate(batch):
+            # grab each field back out of session_state by key
+            title   = st.session_state[f"ai_title_{idx}"]
+            acct    = st.session_state[f"ai_acct_{idx}"]
+            request = st.session_state[f"ai_req_{idx}"]
+            types   = st.session_state[f"ai_type_{idx}"]
+            details = st.session_state[f"ai_details_{idx}"]
+            # fall back to original form values for unchanged fields
+            prio    = form.get("Priority","Low")
+            status  = form.get("Status","NEW REQUEST")
+            req_date = form.get("Request Date", datetime.now().strftime("%Y-%m-%d"))
+            assigned = form.get("Assigned To","")
+
+            new_record = {
+                "Title":               title,
+                "ACCT & SEG#":         acct,
+                "Request":             request,
+                "Type":                ", ".join(types),
+                "Request Details":     details,
+                "Order#":              form["Order#"],
+                "Priority":            prio,
+                "Status":              status,
+                "Request Date":        req_date,
+                "Assigned To":         assigned,
+            }
+            process_and_save_request(new_record)
+
+        st.success("All requests saved!")
+        # clear the batch and rerun so the expanders disappear
+        st.session_state["ai_generated_forms"] = []
+        st.experimental_rerun()
