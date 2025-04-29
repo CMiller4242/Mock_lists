@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta
 import smtplib
 from email.message import EmailMessage
-import msal, requests, uuid
+import uuid
 
 
 
